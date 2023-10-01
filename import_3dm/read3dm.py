@@ -52,6 +52,7 @@ modules_path()
 
 def install_dependencies():
     modulespath = modules_path()
+    python_path = bpy.app.binary_path_python if 'binary_path_python' in bpy.app else sys.executable
 
     try:
         from subprocess import run as sprun
@@ -65,16 +66,15 @@ def install_dependencies():
                     sys.version_info.major,
                     sys.version_info.minor
                 )
-
             ensurepip = os.path.normpath(
                 os.path.join(
-                    os.path.dirname(bpy.app.binary_path_python),
+                    os.path.dirname(python_path),
                     "..", "lib", pyver, "ensurepip"
                 )
             )
             # install pip using the user scheme using the Python
             # version bundled with Blender
-            res = sprun([bpy.app.binary_path_python, ensurepip, "--user"])
+            res = sprun([python_path, ensurepip, "--user"])
 
             if res.returncode == 0:
                 import pip
@@ -92,7 +92,7 @@ def install_dependencies():
         if sys.platform=="darwin":
             pip3 = os.path.normpath(
                 os.path.join(
-                os.path.dirname(bpy.app.binary_path_python),
+                os.path.dirname(python_path),
                 "..",
                 "bin",
                 pip3
@@ -102,7 +102,7 @@ def install_dependencies():
         # call pip in a subprocess so we don't have to mess
         # with internals. Also, this ensures the Python used to
         # install pip is going to be used
-        res = sprun([pip3, "install", "--upgrade", "--target", modulespath, "rhino3dm{}".format(rhino3dm_version)])
+        res = sprun([python_path, '-m', 'pip', "install", "--upgrade", "--target", modulespath, "rhino3dm{}".format(rhino3dm_version)])
         if res.returncode!=0:
             print("Please try manually installing rhino3dm with: pip3 install --upgrade --target {} rhino3dm".format(modulespath))
             raise Exception("Failed to install rhino3dm. See console for manual install instruction.")
