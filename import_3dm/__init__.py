@@ -101,6 +101,12 @@ class Import3dm(Operator, ImportHelper):
         default=False,
     )
 
+    import_views_only: BoolProperty(
+        name="View Only",
+        description="Import views only.",
+        default=False,
+    )
+
     import_instances_grid_layout: BoolProperty(
         name="Grid Layout",
         description="Lay out block definitions in a grid ",
@@ -128,6 +134,7 @@ class Import3dm(Operator, ImportHelper):
             "update_materials":self.update_materials,
             "import_hidden_objects":self.import_hidden_objects,
             "import_hidden_layers":self.import_hidden_layers,
+            "import_views_only":self.import_views_only,
             "import_groups":self.import_groups,
             "import_nested_groups":self.import_nested_groups,
             "import_instances":self.import_instances,
@@ -144,6 +151,7 @@ class Import3dm(Operator, ImportHelper):
         box.label(text="Visibility")
         box.prop(self, "import_hidden_objects")
         box.prop(self, "import_hidden_layers")
+        box.prop(self, "import_views_only")
 
         box = layout.box()
         box.label(text="Views")

@@ -138,5 +138,5 @@ def handle_materials(context, model, materials, update):
                 principled.ior = ior
                 principled.roughness = roughness
                 principled.specular = spec
-                principled.node_principled_bsdf.inputs[16].default_value = transrough
+                # principled.node_principled_bsdf.inputs[16].default_value = transrough
             materials[matname] = blmat

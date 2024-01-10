@@ -152,6 +152,7 @@ def read_3dm(context, options):
 
     # Parse options
     import_views = options.get("import_views", False)
+    import_views_only = options.get("import_views_only", False)
     import_named_views = options.get("import_named_views", False)
     import_hidden_objects = options.get("import_hidden_objects", False)
     import_hidden_layers = options.get("import_hidden_layers", False)
@@ -167,6 +168,8 @@ def read_3dm(context, options):
     if import_named_views:
         converters.handle_views(context, model, toplayer, model.NamedViews, "NamedViews", scale)
 
+    if import_views_only:
+        return {'FINISHED'}
     # Handle materials
     converters.handle_materials(context, model, materials, update_materials)
 
