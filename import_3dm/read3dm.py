@@ -1,6 +1,6 @@
 # MIT License
 
-# Copyright (c) 2018-2020 Nathan Letwory, Joel Putnam, Tom Svilans, Lukas Fertig
+# Copyright (c) 2018-2024 Nathan Letwory, Joel Putnam, Tom Svilans, Lukas Fertig
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,8 @@ import os.path
 import bpy
 import sys
 import os
-import site
+from pathlib import Path
+from typing import Any, Dict, Set
 
 
 def modules_path():
@@ -50,105 +51,25 @@ def modules_path():
 modules_path()
 
 
-def install_dependencies():
-    modulespath = modules_path()
-    python_path = bpy.app.binary_path_python if 'binary_path_python' in bpy.app else sys.executable
-
-    try:
-        from subprocess import run as sprun
-        try:
-            import pip
-        except:
-            print("Installing pip... "),
-            pyver = ""
-            if sys.platform != "win32":
-                pyver = "python{}.{}".format(
-                    sys.version_info.major,
-                    sys.version_info.minor
-                )
-            ensurepip = os.path.normpath(
-                os.path.join(
-                    os.path.dirname(python_path),
-                    "..", "lib", pyver, "ensurepip"
-                )
-            )
-            # install pip using the user scheme using the Python
-            # version bundled with Blender
-            res = sprun([python_path, ensurepip, "--user"])
-
-            if res.returncode == 0:
-                import pip
-            else:
-                raise Exception("Failed to install pip.")
-
-        print("Installing rhino3dm to {}... ".format(modulespath)),
-
-        # if we eventually want to pin a certain version
-        # we can add here something like "==0.0.5".
-        # for now assume latest available is ok
-        rhino3dm_version=""
-
-        pip3 = "pip3"
-        if sys.platform=="darwin":
-            pip3 = os.path.normpath(
-                os.path.join(
-                os.path.dirname(python_path),
-                "..",
-                "bin",
-                pip3
-                )
-            )
-
-        # call pip in a subprocess so we don't have to mess
-        # with internals. Also, this ensures the Python used to
-        # install pip is going to be used
-        res = sprun([python_path, '-m', 'pip', "install", "--upgrade", "--target", modulespath, "rhino3dm{}".format(rhino3dm_version)])
-        if res.returncode!=0:
-            print("Please try manually installing rhino3dm with: pip3 install --upgrade --target {} rhino3dm".format(modulespath))
-            raise Exception("Failed to install rhino3dm. See console for manual install instruction.")
-    except:
-        raise Exception("Failed to install dependencies. Please make sure you have pip installed.")
-
-
-# TODO: add update mechanism
-try:
-    import rhino3dm as r3d
-except:
-    print("Failed to load rhino3dm, trying to install automatically...")
-    try:
-        install_dependencies()
-        # let user restart Blender, reloading of rhino3dm after automated
-        # install doesn't always work, better to just fail clearly before
-        # that
-        raise Exception("Please restart Blender.")
-    except:
-        raise
-
+import rhino3dm as r3d
 from . import converters
 
 
-def read_3dm(context, options):
-
-    filepath = options.get("filepath", "")
-    model = None
-
-    try:
-        model = r3d.File3dm.Read(filepath)
-    except:
-        print("Failed to import .3dm model: {}".format(filepath))
-        return {'CANCELLED'}
-
-    top_collection_name = os.path.splitext(os.path.basename(filepath))[0]
+def create_or_get_top_layer(context, filepath):
+    top_collection_name = Path(filepath).stem
     if top_collection_name in context.blend_data.collections.keys():
         toplayer = context.blend_data.collections[top_collection_name]
     else:
         toplayer = context.blend_data.collections.new(name=top_collection_name)
+    return toplayer
 
-    # Get proper scale for conversion
-    scale = r3d.UnitSystem.UnitScale(model.Settings.ModelUnitSystem, r3d.UnitSystem.Meters) / context.scene.unit_settings.scale_length
 
-    layerids = {}
-    materials = {}
+def read_3dm(
+        context : bpy.types.Context,
+        options : Dict[str, Any]
+    )   -> Set[str]:
+
+    converters.initialize(context)
 
     # Parse options
     import_views = options.get("import_views", False)
@@ -161,6 +82,28 @@ def read_3dm(context, options):
     import_instances = options.get("import_instances",False)
     update_materials = options.get("update_materials", False)
 
+    filepath : str = options.get("filepath", "")
+    model = None
+
+    try:
+        model = r3d.File3dm.Read(filepath)
+    except:
+        print("Failed to import .3dm model: {}".format(filepath))
+        return {'CANCELLED'}
+
+
+    # place model in context so we can access it when we need to
+    # find data from different tables, like for instance dimension
+    # styles while working on annotation import.
+    options["rh_model"] = model
+
+    toplayer = create_or_get_top_layer(context, filepath)
+
+    # Get proper scale for conversion
+    scale = r3d.UnitSystem.UnitScale(model.Settings.ModelUnitSystem, r3d.UnitSystem.Meters) / context.scene.unit_settings.scale_length
+
+    layerids = {}
+    materials = {}
 
     # Import Views and NamedViews
     if import_views:
@@ -175,49 +118,49 @@ def read_3dm(context, options):
 
     # Handle layers
     converters.handle_layers(context, model, toplayer, layerids, materials, update_materials, import_hidden_layers)
-    materials[converters.DEFAULT_RHINO_MATERIAL] = None
 
     #build skeletal hierarchy of instance definitions as collections (will be populated by object importer)
     if import_instances:
         converters.handle_instance_definitions(context, model, toplayer, "Instance Definitions")
 
     # Handle objects
+    ob : r3d.File3dmObject = None
     for ob in model.Objects:
-        og = ob.Geometry
+        og : r3d.GeometryBase = ob.Geometry
 
         # Skip unsupported object types early
         if og.ObjectType not in converters.RHINO_TYPE_TO_IMPORT and og.ObjectType != r3d.ObjectType.InstanceReference:
             print("Unsupported object type: {}".format(og.ObjectType))
             continue
 
-        #convert_rhino_object = converters.RHINO_TYPE_TO_IMPORT[og.ObjectType]
-
-        # Check object and layer visibility
+        # Check object visibility
         attr = ob.Attributes
         if not attr.Visible and not import_hidden_objects:
             continue
 
+        # Check object layer visibility
         rhinolayer = model.Layers.FindIndex(attr.LayerIndex)
-
         if not rhinolayer.Visible and not import_hidden_layers:
             continue
 
-        # Create object name
+        # Create object name if none exists or it is an empty string.
+        # Otherwise use the name from the 3dm file.
         if attr.Name == "" or attr.Name is None:
-            n = str(og.ObjectType).split(".")[1]+" " + str(attr.Id)
+            object_name = str(og.ObjectType).split(".")[1]+" " + str(attr.Id)
         else:
-            n = attr.Name
+            object_name = attr.Name
 
-        # Get render material
-        mat_index = ob.Attributes.MaterialIndex
-
-        if ob.Attributes.MaterialSource == r3d.ObjectMaterialSource.MaterialFromLayer:
+        # Get render material, either from object. or if MaterialSource
+        # is set to MaterialFromLayer, from the layer.
+        mat_index = attr.MaterialIndex
+        if attr.MaterialSource == r3d.ObjectMaterialSource.MaterialFromLayer:
             mat_index = rhinolayer.RenderMaterialIndex
-
         rhino_material = model.Materials.FindIndex(mat_index)
 
-        # Handle default material and fetch associated Blender material
-        if rhino_material.Name == "":
+        # Get material name. In case of the Rhino default material use
+        # DEFAULT_RHINO_MATERIAL, otherwise compute a name from the material
+        # so that it is fit for Blender usage.
+        if mat_index == -1 or rhino_material.Name == "":
             matname = converters.material.DEFAULT_RHINO_MATERIAL
         else:
             matname = converters.material_name(rhino_material)
@@ -228,19 +171,22 @@ def read_3dm(context, options):
         else:
             view_color = ob.Attributes.ObjectColor
 
-        rhinomat = materials[matname]
+        # Get the corresponding Blender material based on the material name
+        # from the material dictionary
+        if matname not in materials.keys():
+            matname = converters.material.DEFAULT_RHINO_MATERIAL
+        blender_material = materials[matname]
+        if og.ObjectType == r3d.ObjectType.Annotation:
+            blender_material = materials[converters.material.DEFAULT_TEXT_MATERIAL]
 
         # Fetch layer
         layer = layerids[str(rhinolayer.Id)][1]
 
-
         if og.ObjectType==r3d.ObjectType.InstanceReference and import_instances:
-            n = model.InstanceDefinitions.FindId(og.ParentIdefId).Name
+            object_name = model.InstanceDefinitions.FindId(og.ParentIdefId).Name
 
         # Convert object
-        converters.convert_object(context, ob, n, layer, rhinomat, view_color, scale, options)
-
-        #convert_rhino_object(og, context, n, attr.Name, attr.Id, layer, rhinomat, scale)
+        converters.convert_object(context, ob, object_name, layer, blender_material, view_color, scale, options)
 
         if import_groups:
             converters.handle_groups(context,attr,toplayer,import_nested_groups)
@@ -250,10 +196,14 @@ def read_3dm(context, options):
 
     # finally link in the container collection (top layer) into the main
     # scene collection.
-    try:
-        context.blend_data.scenes[0].collection.children.link(toplayer)
+    if toplayer.name not in context.scene.collection.children:
+        context.scene.collection.children.link(toplayer)
+    if bpy.app.version[0] < 4:
         bpy.ops.object.shade_smooth({'selected_editable_objects': toplayer.all_objects})
-    except Exception:
-        pass
+    else:
+        with context.temp_override(selected_editable_objects=toplayer.all_objects):
+            bpy.ops.object.shade_smooth()
+
+    converters.cleanup()
 
     return {'FINISHED'}

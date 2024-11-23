@@ -1,6 +1,6 @@
 # MIT License
 
-# Copyright (c) 2018-2019 Nathan Letwory, Joel Putnam, Tom Svilans, Lukas Fertig 
+# Copyright (c) 2018-2024 Nathan Letwory, Joel Putnam, Tom Svilans, Lukas Fertig
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -22,25 +22,8 @@
 
 import rhino3dm as r3d
 from . import utils
-
-'''
-def add_object(context, name, origname, id, verts, faces, layer, rhinomat):
-    """
-    Add a new object with given mesh data, link to
-    collection given by layer
-    """
-    mesh = context.blend_data.meshes.new(name=name)
-    mesh.from_pydata(verts, [], faces)
-    mesh.materials.append(rhinomat)
-    ob = utils.get_iddata(context.blend_data.objects, id, origname, mesh)
-    # Rhino data is all in world space, so add object at 0,0,0
-    ob.location = (0.0, 0.0, 0.0)
-    ob.color = [x/255. for x in rhinocolor]
-    try:
-        layer.objects.link(ob)
-    except Exception:
-        pass
-'''
+import bpy
+import bmesh
 
 def import_render_mesh(context, ob, name, scale, options):
     # concatenate all meshes from all (brep) faces,
@@ -49,18 +32,22 @@ def import_render_mesh(context, ob, name, scale, options):
     og = ob.Geometry
     oa = ob.Attributes
 
+    needs_welding = False
+
     if og.ObjectType == r3d.ObjectType.Extrusion:
         msh = [og.GetMesh(r3d.MeshType.Any)]
     elif og.ObjectType == r3d.ObjectType.Mesh:
         msh = [og]
     elif og.ObjectType == r3d.ObjectType.SubD:
-        msh = [r3d.Mesh.CreateFromSubDControlNet(og)]
+        msh = [r3d.Mesh.CreateFromSubDControlNet(og, True)]
+        needs_welding = True
     elif og.ObjectType == r3d.ObjectType.Brep:
         msh = [og.Faces[f].GetMesh(r3d.MeshType.Any) for f in range(len(og.Faces)) if type(og.Faces[f])!=list]
     fidx = 0
     faces = []
     vertices = []
     coords = []
+    vcls = []
 
     # now add all faces and vertices to the main lists
     for m in msh:
@@ -78,19 +65,22 @@ def import_render_mesh(context, ob, name, scale, options):
         fidx = fidx + len(m.Vertices)
         vertices.extend([(m.Vertices[v].X * scale, m.Vertices[v].Y * scale, m.Vertices[v].Z * scale) for v in range(len(m.Vertices))])
         coords.extend([(m.TextureCoordinates[v].X, m.TextureCoordinates[v].Y) for v in range(len(m.TextureCoordinates))])
-   
-    mesh = context.blend_data.meshes.new(name=name)
-    mesh.from_pydata(vertices, [], faces)
+        vcls.extend((m.VertexColors[v][0], m.VertexColors[v][1], m.VertexColors[v][2], m.VertexColors[v][3]) for v in range(len(m.VertexColors)))
 
-    
+    tags = utils.create_tag_dict(oa.Id, oa.Name)
+    mesh = utils.get_or_create_iddata(context.blend_data.meshes, tags, None)
+    mesh.clear_geometry()
+    mesh.from_pydata(vertices, [], faces, shade_flat=False)
+
+
     if mesh.loops and len(coords) == len(vertices):
-        # todo: 
+        # todo:
         # * check for multiple mappings and handle them
         # * get mapping name (missing from rhino3dm)
         # * rhino assigns a default mapping to unmapped objects, so if nothing is specified, this will be imported
 
         #create a new uv_layer and copy texcoords from input mesh
-        mesh.uv_layers.new(name="RhinoUVMap") 
+        mesh.uv_layers.new(name="RhinoUVMap")
 
         if sum(len(x) for x in faces) == len(mesh.uv_layers["RhinoUVMap"].data):
             uvl = mesh.uv_layers["RhinoUVMap"].data[:]
@@ -100,15 +90,34 @@ def import_render_mesh(context, ob, name, scale, options):
 
             mesh.validate()
             mesh.update()
-        
+
         else:
             #in case there was a data mismatch, cleanup the created layer
             mesh.uv_layers.remove(mesh.uv_layers["RhinoUVMap"])
 
+    if len(vcls) == len(vertices):
+        mesh.attributes.new("RhinoColor", "FLOAT_COLOR", "POINT")
+        rcl = mesh.attributes["RhinoColor"]
+        for i in range(len(vcls)):
+            vcl = vcls[i]
+            rcl.data[i].color =  (vcl[0] / 255.0, vcl[1] / 255.0, vcl[2] / 255.0, vcl[3] / 255.0)
+
+        mesh.validate()
+        mesh.update()
 
 
+    if needs_welding:
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
+        bm.to_mesh(mesh)
+        bm.free()
+        if bpy.app.version >= (4, 1):
+            mesh.set_sharp_from_angle(angle=0.523599) # 30deg
+        else:
+            mesh.use_auto_smooth = True
     # done, now add object to blender
 
-    
+
     return mesh
-    #add_object(context, n, Name, Id, vertices, faces, layer, rhinomat)
